@@ -74,7 +74,7 @@ def _comment_tree(comments):
     for c in comments:
         print(sorted(c.keys()))
         if 'parent' in c:
-            by_id[c['parent']].setdefault('__children', []).append(c)
+            by_id[c['parent']['id']].setdefault('__children', []).append(c)
         else:
             root.append(c)
     return root
