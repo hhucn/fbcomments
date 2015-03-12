@@ -42,7 +42,7 @@ def graph_api(config, path, params={}):
 def _write_data(d, name, data):
     fn = os.path.join(d, name)
     with io.open(fn, 'w', encoding='utf-8') as dataf:
-        dataf.write(json.dumps(data, indent=2))
+        dataf.write(json.dumps(data, indent=2, ensure_ascii=False))
     print('Wrote %s' % fn)
 
 
@@ -54,6 +54,44 @@ def _load_data(d, name):
 
 def _latest_data(config):
     return sorted(os.listdir(config['download_location']))[-1]
+
+
+def _read_all(d):
+    feed_index = _load_data(d, 'feed')
+    feed = []
+    for post_overview in feed_index:
+        post_id = post_overview['id']
+        post = _load_data(d, 'post_%s' % post_id)
+        post['comments'] = _load_data(d, 'comments_%s' % post_id)
+        post['likes'] = _load_data(d, 'likes_%s' % post_id)
+        feed.append(post)
+    return feed
+
+
+def _comment_tree(comments):
+    by_id = {c['id']: c for c in comments}
+    root = []
+    for c in comments:
+        print(sorted(c.keys()))
+        if 'parent' in c:
+            by_id[c['parent']].setdefault('__children', []).append(c)
+        else:
+            root.append(c)
+    return root
+
+
+def _iterate_comment_tree(comments):
+    # Yields (depth, comment) tuples
+    def _yield_recursive(depth, c):
+        yield (depth, c)
+        for child in c.get('__children', []):
+            for t in _yield_recursive(depth + 1, child):
+                yield t
+
+    root = _comment_tree(comments)
+    for c in root:
+        for t in _yield_recursive(0, c):
+            yield t
 
 
 def action_download(config):
@@ -75,8 +113,17 @@ def action_download(config):
         post = graph_api(config, '%s' % post_id)
         _write_data(d, 'post_%s' % post_id, post)
 
-        comments = graph_api(config, '%s/comments' % post_id)
+        comments = graph_api(
+            config, '%s/comments' % post_id,
+            {
+                'filter': 'stream',
+                'fields': 'parent,id,message,created_time,from,like_count'
+            })
         _write_data(d, 'comments_%s' % post_id, comments)
+
+        likes = graph_api(
+            config, '%s/likes' % post_id, {})
+        _write_data(d, 'likes_%s' % post_id, comments)
 
 
 def action_comment_stats(config):
@@ -88,6 +135,35 @@ def action_comment_stats(config):
         comments = _load_data(d, fn)
         count += len(comments)
     print('%d comments' % count)
+
+
+def action_write_x(config):
+    import xlsxwriter
+    d = os.path.join(config['download_location'], _latest_data(config))
+    fn = os.path.join(d, 'comments.xlsx')
+
+    workbook = xlsxwriter.Workbook(fn, {'strings_to_urls': False})
+    worksheet = workbook.add_worksheet()
+    column_names = ['Datum', 'Like count', 'Autor', 'Beitrag', 'Kommentare']
+    for i, column_name in enumerate(column_names):
+        worksheet.write(0, i, column_name)
+
+    row = 1
+    feed = _read_all(d)
+    for post in feed:
+        worksheet.write(row, 0, post['updated_time'])
+        worksheet.write(row, 1, len(post['likes']))
+        worksheet.write(row, 2, post['from']['name'])
+        worksheet.write(row, 3, post['message'])
+        for depth, c in _iterate_comment_tree(post['comments']):
+            row += 1
+            worksheet.write(row, 0, c['created_time'])
+            worksheet.write(row, 1, c['like_count'])
+            worksheet.write(row, 2, c['from']['name'])
+            worksheet.write(row, 4 + depth, c['message'])
+        row += 1
+
+    workbook.close()
 
 
 def main():
