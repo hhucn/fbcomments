@@ -40,9 +40,20 @@ def graph_api(config, path, params={}):
 
 
 def _write_data(d, name, data):
-    fn = os.path.join(d, 'feed')
+    fn = os.path.join(d, name)
     with io.open(fn, 'w', encoding='utf-8') as dataf:
         dataf.write(json.dumps(data, indent=2))
+    print('Wrote %s' % fn)
+
+
+def _load_data(d, name):
+    fn = os.path.join(d, name)
+    with io.open(fn, 'r', encoding='utf-8') as dataf:
+        return json.load(dataf)
+
+
+def _latest_data(config):
+    return sorted(os.listdir(config['download_location']))[-1]
 
 
 def action_download(config):
@@ -66,6 +77,17 @@ def action_download(config):
 
         comments = graph_api(config, '%s/comments' % post_id)
         _write_data(d, 'comments_%s' % post_id, comments)
+
+
+def action_comment_stats(config):
+    d = os.path.join(config['download_location'], _latest_data(config))
+    count = 0
+    for fn in os.listdir(d):
+        if not fn.startswith('comments_'):
+            continue
+        comments = _load_data(d, fn)
+        count += len(comments)
+    print('%d comments' % count)
 
 
 def main():
