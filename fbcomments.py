@@ -43,7 +43,6 @@ def _write_data(d, name, data):
     fn = os.path.join(d, name)
     with io.open(fn, 'w', encoding='utf-8') as dataf:
         dataf.write(json.dumps(data, indent=2, ensure_ascii=False))
-    print('Wrote %s' % fn)
 
 
 def _load_data(d, name):
@@ -72,7 +71,6 @@ def _comment_tree(comments):
     by_id = {c['id']: c for c in comments}
     root = []
     for c in comments:
-        print(sorted(c.keys()))
         if 'parent' in c:
             by_id[c['parent']['id']].setdefault('__children', []).append(c)
         else:
@@ -144,7 +142,9 @@ def action_write_x(config):
 
     workbook = xlsxwriter.Workbook(fn, {'strings_to_urls': False})
     worksheet = workbook.add_worksheet()
-    column_names = ['Datum', 'Like count', 'Autor', 'Beitrag', 'Kommentare']
+    column_names = [
+        'Datum', 'Likes', 'Shares', 'Autor', 'Medium',
+        'Beitrag', 'Kommentar', 'Antwort']
     for i, column_name in enumerate(column_names):
         worksheet.write(0, i, column_name)
 
@@ -153,17 +153,20 @@ def action_write_x(config):
     for post in feed:
         worksheet.write(row, 0, post['updated_time'])
         worksheet.write(row, 1, len(post['likes']))
-        worksheet.write(row, 2, post['from']['name'])
-        worksheet.write(row, 3, post['message'])
+        worksheet.write(row, 2, post.get('shares', {'count': ''})['count'])
+        worksheet.write(row, 3, post['from']['name'])
+        worksheet.write(row, 4, post.get('type', 'unbekannt'))
+        worksheet.write(row, 5, post['message'])
         for depth, c in _iterate_comment_tree(post['comments']):
             row += 1
             worksheet.write(row, 0, c['created_time'])
             worksheet.write(row, 1, c['like_count'])
-            worksheet.write(row, 2, c['from']['name'])
-            worksheet.write(row, 4 + depth, c['message'])
+            worksheet.write(row, 3, c['from']['name'])
+            worksheet.write(row, 6 + depth, c['message'])
         row += 1
 
     workbook.close()
+    print('Wrote %s' % fn)
 
 
 def main():
