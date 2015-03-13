@@ -151,7 +151,7 @@ def action_write_x(config):
     row = 1
     feed = _read_all(d)
     for post in feed:
-        worksheet.write(row, 0, post['updated_time'])
+        worksheet.write(row, 0, post['created_time'])
         worksheet.write(row, 1, len(post['likes']))
         worksheet.write(row, 2, post.get('shares', {'count': ''})['count'])
         worksheet.write(row, 3, post['from']['name'])
