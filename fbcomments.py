@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import collections
 import io
 import json
 import os
@@ -67,6 +68,16 @@ def _read_all(d):
     return feed
 
 
+def _all_users(d):
+    feed = _read_all(d)
+    for post in feed:
+        yield ('post', post['from'])
+        for like_user in post['likes']:
+            yield ('like_post', like_user)
+        for c in post['comments']:
+            yield ('comment', c['from'])
+
+
 def _comment_tree(comments):
     by_id = {c['id']: c for c in comments}
     root = []
@@ -121,7 +132,7 @@ def action_download(config):
 
         likes = graph_api(
             config, '%s/likes' % post_id, {})
-        _write_data(d, 'likes_%s' % post_id, comments)
+        _write_data(d, 'likes_%s' % post_id, likes)
 
 
 def action_comment_stats(config):
@@ -143,7 +154,7 @@ def action_write_x(config):
     workbook = xlsxwriter.Workbook(fn, {'strings_to_urls': False})
     worksheet = workbook.add_worksheet()
     column_names = [
-        'Datum', 'Likes', 'Shares', 'Autor', 'Medium',
+        'Datum', 'Likes', 'Shares', 'Autor-Id', 'Autor', 'Medium',
         'Beitrag', 'Kommentar', 'Antwort']
     for i, column_name in enumerate(column_names):
         worksheet.write(0, i, column_name)
@@ -154,19 +165,46 @@ def action_write_x(config):
         worksheet.write(row, 0, post['created_time'])
         worksheet.write(row, 1, len(post['likes']))
         worksheet.write(row, 2, post.get('shares', {'count': ''})['count'])
-        worksheet.write(row, 3, post['from']['name'])
-        worksheet.write(row, 4, post.get('type', 'unbekannt'))
-        worksheet.write(row, 5, post['message'])
+        worksheet.write(row, 3, post['from']['id'])
+        worksheet.write(row, 4, post['from']['name'])
+        worksheet.write(row, 5, post.get('type', 'unbekannt'))
+        worksheet.write(row, 6, post['message'])
         for depth, c in _iterate_comment_tree(post['comments']):
             row += 1
             worksheet.write(row, 0, c['created_time'])
             worksheet.write(row, 1, c['like_count'])
-            worksheet.write(row, 3, c['from']['name'])
-            worksheet.write(row, 6 + depth, c['message'])
+            worksheet.write(row, 3, c['from']['id'])
+            worksheet.write(row, 4, c['from']['name'])
+            worksheet.write(row, 7 + depth, c['message'])
         row += 1
 
     workbook.close()
     print('Wrote %s' % fn)
+
+
+def action_count_users(config):
+    by_action = collections.defaultdict(list)
+    all_users = set()
+    d = os.path.join(config['download_location'], _latest_data(config))
+    for action, u in _all_users(d):
+        by_action[action].append(u['id'])
+        all_users.add(u['id'])
+    print('%d unique users' % len(all_users))
+    action_str = ',  '.join(
+        '%s: %d entries, %d users' % (action_name, len(users), len(set(users)))
+        for action_name, users in by_action.items()
+    )
+    print('By action: %s' % action_str)
+
+
+def action_duplicate_names(config):
+    id_by_name = collections.defaultdict(set)
+    d = os.path.join(config['download_location'], _latest_data(config))
+    for _, u in _all_users(d):
+        id_by_name[u['name']].add(u['id'])
+    dupls = {name: ids for name, ids in id_by_name.items() if len(ids) > 1}
+    for name, ids in sorted(dupls.items(), key=(lambda t: (-len(t[1]), t[0]))):
+        print("%s: %s" % (name, ', '.join(ids)))
 
 
 def main():
