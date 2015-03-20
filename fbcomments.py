@@ -171,7 +171,7 @@ def action_write_x(config):
     workbook = xlsxwriter.Workbook(fn, {'strings_to_urls': False})
     worksheet = workbook.add_worksheet()
     column_names = [
-        'Datum', 'Likes', 'Shares', 'Autor-Id', 'Autor', 'Medium',
+        'ID', 'Datum', 'Likes', 'Shares', 'Autor-Id', 'Autor', 'Medium',
         'Beitrag', 'Kommentar', 'Antwort']
     for i, column_name in enumerate(column_names):
         worksheet.write(0, i, column_name)
@@ -179,20 +179,22 @@ def action_write_x(config):
     row = 1
     feed = _read_all(d)
     for post in feed:
-        worksheet.write(row, 0, post['created_time'])
-        worksheet.write(row, 1, len(post['likes']))
-        worksheet.write(row, 2, post.get('shares', {'count': ''})['count'])
-        worksheet.write(row, 3, post['from']['id'])
-        worksheet.write(row, 4, post['from']['name'])
-        worksheet.write(row, 5, post.get('type', 'unbekannt'))
-        worksheet.write(row, 6, post['message'])
+        worksheet.write(row, 0, post['id'])
+        worksheet.write(row, 1, post['created_time'])
+        worksheet.write(row, 2, len(post['likes']))
+        worksheet.write(row, 3, post.get('shares', {'count': ''})['count'])
+        worksheet.write(row, 4, post['from']['id'])
+        worksheet.write(row, 5, post['from']['name'])
+        worksheet.write(row, 6, post.get('type', 'unbekannt'))
+        worksheet.write(row, 7, post['message'])
         for depth, c in _iterate_comment_tree(post['comments']):
             row += 1
-            worksheet.write(row, 0, c['created_time'])
-            worksheet.write(row, 1, c['like_count'])
-            worksheet.write(row, 3, c['from']['id'])
-            worksheet.write(row, 4, c['from']['name'])
-            worksheet.write(row, 7 + depth, c['message'])
+            worksheet.write(row, 0, post['id'])
+            worksheet.write(row, 1, c['created_time'])
+            worksheet.write(row, 2, c['like_count'])
+            worksheet.write(row, 4, c['from']['id'])
+            worksheet.write(row, 5, c['from']['name'])
+            worksheet.write(row, 8 + depth, c['message'])
         row += 1
 
     workbook.close()
