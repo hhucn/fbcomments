@@ -2,5 +2,6 @@
 	"access_token": "Go to https://developers.facebook.com/tools/explorer to obtain a token",
 	"page": "bundesregierung",
 	"download_location": "download",
+	"abort_on_error": false,
 	"verbose": true
 }

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -117,9 +118,17 @@ def action_download(config):
     })
     _write_data(d, 'feed', feed)
 
+    errors = []
     for post_overview in feed:
         post_id = post_overview['id']
-        post = graph_api(config, '%s' % post_id)
+        try:
+            post = graph_api(config, '%s' % post_id)
+        except urllib.error.HTTPError as he:
+            if config.get('abort_on_error', True):
+                raise
+            else:
+                errors.append((post_id, he))
+                continue
         _write_data(d, 'post_%s' % post_id, post)
 
         comments = graph_api(
@@ -133,6 +142,13 @@ def action_download(config):
         likes = graph_api(
             config, '%s/likes' % post_id, {})
         _write_data(d, 'likes_%s' % post_id, likes)
+
+    if errors:
+        print('The following posts failed to load:')
+        for post_id, he in errors:
+            print('%s (%d)' % (post_id, he.code))
+
+        sys.exit(1)
 
 
 def action_comment_stats(config):
