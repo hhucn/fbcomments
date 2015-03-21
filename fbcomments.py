@@ -80,6 +80,25 @@ def _all_users(d):
             yield ('comment', c['from'])
 
 
+def _user_stats(d):
+    """ Returns a list of tuples (id, name, {action: count}) """
+    user_dict = {}  # Key: Id Contents: (name, {action: count})
+    for action, u in _all_users(d):
+        _, adict = user_dict.setdefault(
+            u['id'], (u['name'], collections.Counter()))
+        adict[action] += 1
+
+    users = [(uid, udata[0], udata[1]) for uid, udata in user_dict.items()]
+
+    def _key_actioncount(u):
+        uid, uname, actions = u
+        return (
+            -sum(actions.values()), -actions.get('comment', 0),
+            -actions.get('like_post', 0), uname, uid)
+    users.sort(key=_key_actioncount)
+    return users
+
+
 def _comment_tree(comments):
     by_id = {c['id']: c for c in comments}
     root = []
@@ -89,6 +108,16 @@ def _comment_tree(comments):
         else:
             root.append(c)
     return root
+
+
+def _xslsx_write_header(worksheet, columns, row=0):
+    for i, column_name in enumerate(columns):
+        worksheet.write(row, i, column_name)
+
+
+def _xslsx_write_row(worksheet, row_num, row_values, row_start=0):
+    for i, v in enumerate(row_values, start=row_start):
+        worksheet.write(row_num, i, v)
 
 
 def _iterate_comment_tree(comments):
@@ -169,33 +198,46 @@ def action_write_x(config):
     fn = os.path.join(d, 'comments.xlsx')
 
     workbook = xlsxwriter.Workbook(fn, {'strings_to_urls': False})
-    worksheet = workbook.add_worksheet()
-    column_names = [
+    worksheet = workbook.add_worksheet('Inhalte')
+    _xslsx_write_header(worksheet, [
         'ID', 'Datum', 'Likes', 'Shares', 'Autor-Id', 'Autor', 'Medium',
-        'Beitrag', 'Kommentar', 'Antwort']
-    for i, column_name in enumerate(column_names):
-        worksheet.write(0, i, column_name)
+        'Beitrag', 'Kommentar', 'Antwort'])
 
     row = 1
     feed = _read_all(d)
     for post in feed:
-        worksheet.write(row, 0, post['id'])
-        worksheet.write(row, 1, post['created_time'])
-        worksheet.write(row, 2, len(post['likes']))
-        worksheet.write(row, 3, post.get('shares', {'count': ''})['count'])
-        worksheet.write(row, 4, post['from']['id'])
-        worksheet.write(row, 5, post['from']['name'])
-        worksheet.write(row, 6, post.get('type', 'unbekannt'))
-        worksheet.write(row, 7, post['message'])
+        _xslsx_write_row(worksheet, row, [
+            post['id'],
+            post['created_time'],
+            len(post['likes']),
+            post.get('shares', {'count': ''})['count'],
+            post['from']['id'],
+            post['from']['name'],
+            post.get('type', 'unbekannt'),
+            post['message']
+        ])
         for depth, c in _iterate_comment_tree(post['comments']):
             row += 1
-            worksheet.write(row, 0, post['id'])
-            worksheet.write(row, 1, c['created_time'])
-            worksheet.write(row, 2, c['like_count'])
+            _xslsx_write_row(worksheet, row, [
+                post['id'],
+                c['created_time'],
+                c['like_count']
+            ])
+
             worksheet.write(row, 4, c['from']['id'])
             worksheet.write(row, 5, c['from']['name'])
             worksheet.write(row, 8 + depth, c['message'])
         row += 1
+
+    worksheet = workbook.add_worksheet('Benutzer')
+    _xslsx_write_header(worksheet, [
+        'ID', 'Name', 'Kommentare', 'Likes', 'Aktionen gesamt'])
+    for row, s in enumerate(_user_stats(d), start=1):
+        uid, uname, actions = s
+        _xslsx_write_row(
+            worksheet, row,
+            [uid, uname, actions.get('comment'),
+             actions.get('like_post'), sum(actions.values())])
 
     workbook.close()
     print('Wrote %s' % fn)
