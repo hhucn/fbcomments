@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
+from __future__ import unicode_literals
+
 import argparse
 import collections
 import io
+import itertools
 import json
 import os
 import sys
@@ -70,8 +73,7 @@ def _read_all(d):
     return feed
 
 
-def _all_users(d):
-    feed = _read_all(d)
+def _all_users(feed):
     for post in feed:
         yield ('post', post['from'])
         for like_user in post['likes']:
@@ -80,23 +82,45 @@ def _all_users(d):
             yield ('comment', c['from'])
 
 
-def _user_stats(d):
+def _duplicate_names(feed):
+    """ Returns a sorted list of name -> set of ids """
+    id_by_name = collections.defaultdict(set)
+    for _, u in _all_users(feed):
+        id_by_name[u['name']].add(u['id'])
+    dupls = {
+        name: sorted(ids) for name, ids in id_by_name.items() if len(ids) > 1}
+    return sorted(dupls.items(), key=(lambda t: (-len(t[1]), t[0])))
+
+
+def _user_stats(feed):
     """ Returns a list of tuples (id, name, {action: count}) """
     user_dict = {}  # Key: Id Contents: (name, {action: count})
-    for action, u in _all_users(d):
+    for action, u in _all_users(feed):
         _, adict = user_dict.setdefault(
             u['id'], (u['name'], collections.Counter()))
         adict[action] += 1
 
     users = [(uid, udata[0], udata[1]) for uid, udata in user_dict.items()]
 
-    def _key_actioncount(u):
-        uid, uname, actions = u
-        return (
-            -sum(actions.values()), -actions.get('comment', 0),
-            -actions.get('like_post', 0), uname, uid)
-    users.sort(key=_key_actioncount)
+    users.sort(key=_user_key_actioncount)
     return users
+
+
+def _user_key_commentcount(u):
+    uid, uname, actions = u
+    return (-actions.get('comment', 0), uname, uid)
+
+
+def _user_key_likecount(u):
+    uid, uname, actions = u
+    return (-actions.get('like_post', 0), uname, uid)
+
+
+def _user_key_actioncount(u):
+    uid, uname, actions = u
+    return (
+        -sum(actions.values()), -actions.get('comment', 0),
+        -actions.get('like_post', 0), uname, uid)
 
 
 def _comment_tree(comments):
@@ -110,13 +134,34 @@ def _comment_tree(comments):
     return root
 
 
-def _xslsx_write_header(worksheet, columns, row=0):
-    for i, column_name in enumerate(columns):
-        worksheet.write(row, i, column_name)
+def _count_entry_users(feed):
+    by_action = collections.defaultdict(list)
+    for action, u in _all_users(feed):
+        by_action[action].append(u['id'])
+    return by_action
 
 
-def _xslsx_write_row(worksheet, row_num, row_values, row_start=0):
-    for i, v in enumerate(row_values, start=row_start):
+def _xslsx_write_header(worksheet, columns, row=0, column_offset=0):
+    for i, column_name in enumerate(columns, column_offset):
+        worksheet.write(row, i, column_name, worksheet._fbc_formats['header'])
+
+
+def _xslsx_write_heading(worksheet, title, row, col):
+    worksheet.write(row, col, title, worksheet._fbc_formats['heading'])
+
+
+def _xslsx_write_heading_range(worksheet, title, row, col, width, height=1):
+    import xlsxwriter.utility
+    range_start = xlsxwriter.utility.xl_rowcol_to_cell(row, col)
+    range_end = xlsxwriter.utility.xl_rowcol_to_cell(
+        row + height - 1, col + width - 1)
+    worksheet.merge_range(
+        '%s:%s' % (range_start, range_end), title,
+        worksheet._fbc_formats['heading_range'])
+
+
+def _xslsx_write_row(worksheet, row_num, values, column_offset=0):
+    for i, v in enumerate(values, start=column_offset):
         worksheet.write(row_num, i, v)
 
 
@@ -194,11 +239,31 @@ def action_comment_stats(config):
 
 def action_write_x(config):
     import xlsxwriter
-    d = os.path.join(config['download_location'], _latest_data(config))
-    fn = os.path.join(d, 'comments.xlsx')
+    latest_d = _latest_data(config)
+    d = os.path.join(config['download_location'], latest_d)
+    fn = os.path.join(d, 'stats.xlsx')
 
-    workbook = xlsxwriter.Workbook(fn, {'strings_to_urls': False})
+    workbook = xlsxwriter.Workbook(
+        fn, {'strings_to_urls': False, 'in_memory': True})
+    workbook.set_properties({
+        'title': 'Facebook-Analyse von %s' % latest_d,
+        'subject': 'Kommentare des Facebook-Accounts "%s"' % config['page'],
+        'author': 'Philipp Hagemeister',
+        'company': 'HHU Düsseldorf',
+        'keywords': 'Facebook, %s, Kommentare, Likes' % config['page'],
+        'comments':
+            'Erstellt mit fbcomments (https://github.com/hhucn/fbcomments)',
+    })
+
+    fbc_formats = {
+        'heading': workbook.add_format({'bold': True}),
+        'heading_range': workbook.add_format(
+            {'bold': True, 'align': 'center'}),
+        'header': workbook.add_format({'bold': True, 'bottom': 1}),
+    }
+
     worksheet = workbook.add_worksheet('Inhalte')
+    worksheet._fbc_formats = fbc_formats
     _xslsx_write_header(worksheet, [
         'ID', 'Datum', 'Likes', 'Shares', 'Autor-Id', 'Autor', 'Medium',
         'Beitrag', 'Kommentar', 'Antwort'])
@@ -230,26 +295,84 @@ def action_write_x(config):
         row += 1
 
     worksheet = workbook.add_worksheet('Benutzer')
+    worksheet._fbc_formats = fbc_formats
     _xslsx_write_header(worksheet, [
         'ID', 'Name', 'Kommentare', 'Likes', 'Aktionen gesamt'])
-    for row, s in enumerate(_user_stats(d), start=1):
+    user_stats = _user_stats(feed)
+    for row, s in enumerate(user_stats, start=1):
         uid, uname, actions = s
         _xslsx_write_row(
             worksheet, row,
             [uid, uname, actions.get('comment'),
              actions.get('like_post'), sum(actions.values())])
 
+    column_offset = 8
+    _xslsx_write_header(
+        worksheet, row=0, column_offset=column_offset + 1,
+        columns=['Anzahl', 'Benutzer'])
+    by_action = _count_entry_users(feed)
+    all_user_actions = set(itertools.chain(*by_action.values()))
+    _xslsx_write_row(
+        worksheet, 1, column_offset=column_offset,
+        values=[
+            'Insgesamt',
+            sum(len(v) for v in by_action.values()),
+            len(all_user_actions)])
+    _xslsx_write_row(
+        worksheet, 2, column_offset=column_offset,
+        values=[
+            'Post likes',
+            len(by_action['like_post']),
+            len(set(by_action['like_post']))])
+    _xslsx_write_row(
+        worksheet, 3, column_offset=column_offset,
+        values=[
+            'Kommentare',
+            len(by_action['comment']),
+            len(set(by_action['comment']))])
+
+    top_count = 30
+
+    _xslsx_write_heading_range(
+        worksheet, 'Top 30 Kommentarschreiber',
+        row=5, col=column_offset, width=3)
+    _xslsx_write_header(
+        worksheet, ['Name', 'Id', 'Kommentare'],
+        row=6, column_offset=column_offset)
+    top_comments = sorted(user_stats, key=_user_key_commentcount)[:top_count]
+    for row, u in enumerate(top_comments, 7):
+        _xslsx_write_row(
+            worksheet, values=[u[1], u[0], u[2].get('comment', 0)],
+            row_num=row, column_offset=column_offset)
+
+    _xslsx_write_heading_range(
+        worksheet, 'Top 30 Liker', row=5, col=column_offset + 4, width=3)
+    _xslsx_write_header(
+        worksheet, ['Name', 'Id', 'Likes'],
+        row=6, column_offset=column_offset + 4)
+    top_likes = sorted(user_stats, key=_user_key_likecount)[:top_count]
+    for row, u in enumerate(top_likes, 7):
+        _xslsx_write_row(
+            worksheet, values=[u[1], u[0], u[2].get('like_post', 0)],
+            row_num=row, column_offset=column_offset + 4)
+
+    _xslsx_write_heading(
+        worksheet, 'Mehrfache Namen', row=10 + top_count, col=column_offset)
+    for row, (name, ids) in enumerate(
+            _duplicate_names(feed), start=10 + top_count + 1):
+        _xslsx_write_row(
+            worksheet, values=[name] + ids,
+            row_num=row, column_offset=column_offset)
+
     workbook.close()
     print('Wrote %s' % fn)
 
 
 def action_count_users(config):
-    by_action = collections.defaultdict(list)
-    all_users = set()
     d = os.path.join(config['download_location'], _latest_data(config))
-    for action, u in _all_users(d):
-        by_action[action].append(u['id'])
-        all_users.add(u['id'])
+    feed = _read_all(d)
+    by_action = _count_entry_users(feed)
+    all_users = set(itertools.chain(*by_action.values()))
     print('%d unique users' % len(all_users))
     action_str = ',  '.join(
         '%s: %d entries, %d users' % (action_name, len(users), len(set(users)))
@@ -259,12 +382,9 @@ def action_count_users(config):
 
 
 def action_duplicate_names(config):
-    id_by_name = collections.defaultdict(set)
     d = os.path.join(config['download_location'], _latest_data(config))
-    for _, u in _all_users(d):
-        id_by_name[u['name']].add(u['id'])
-    dupls = {name: ids for name, ids in id_by_name.items() if len(ids) > 1}
-    for name, ids in sorted(dupls.items(), key=(lambda t: (-len(t[1]), t[0]))):
+    feed = _read_all(d)
+    for name, ids in _duplicate_names(feed):
         print("%s: %s" % (name, ', '.join(ids)))
 
 
