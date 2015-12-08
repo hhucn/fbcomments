@@ -20,7 +20,7 @@ def _read_config(fn):
         return json.load(cfgf)
 
 
-def graph_api(config, path, params={}):
+def graph_api(config, path, params={}, filter_func=None):
     url = 'https://graph.facebook.com/v2.2/%s' % path
     if config.get('verbose'):
         print(url)
@@ -37,7 +37,8 @@ def graph_api(config, path, params={}):
         if 'data' not in d:
             assert not data
             return d
-        data.extend(d['data'])
+        this_page = filter(filter_func, d['data'])
+        data.extend(this_page)
         if 'paging' in d and 'next' in d['paging']:
             full_url = d['paging']['next']
         else:
@@ -188,9 +189,17 @@ def action_download(config):
     os.mkdir(d)
     print('Downloading to %s' % d)
 
+    filter_func = None
+    if config.get('feedmessage_grep'):
+        def filter_func(p):
+            if 'message' not in p:
+                return False
+            res = config['feedmessage_grep'] in p['message']
+            return res
+
     feed = graph_api(config, '%s/feed' % config['page'], params={
         'fields': 'id,message'
-    })
+    }, filter_func=filter_func)
     _write_data(d, 'feed', feed)
 
     errors = []
@@ -389,6 +398,10 @@ def action_duplicate_names(config):
 
 
 def main():
+    action_list = [
+        g[len('action_'):] for g in globals() if g.startswith('action_')]
+    action_list.sort()
+
     parser = argparse.ArgumentParser(
         'Download facebook comments of a public page')
     parser.add_argument(
@@ -398,7 +411,7 @@ def main():
         default='config.json')
     parser.add_argument(
         'action', metavar='ACTION',
-        help='One of download'
+        help='One of ' + ', '.join(action_list)
     )
     args = parser.parse_args()
 
