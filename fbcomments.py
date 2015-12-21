@@ -711,8 +711,13 @@ def action_write_x(config, url_groups):
     import xlsxwriter
     latest_d = _latest_data(config)
     d = os.path.join(config['download_location'], latest_d)
-    for i, url_group in enumerate(url_groups):
-        fn = os.path.join(d, 'comments_%d.xlsx' % i)
+    for url_group in url_groups:
+        out_dir = os.path.join(d, 'comments')
+        if not os.path.exists(out_dir):
+            os.mkdir(out_dir)
+        sample_post = _load_post(d, url_group[-1])
+        title = re.sub(r'[^a-zA-ZöäüßÖÄÜ 0-9_-]+', '_', sample_post['text'])
+        fn = os.path.join(out_dir, '%s.xlsx' % title)
 
         workbook = xlsxwriter.Workbook(
             fn, {'strings_to_urls': False, 'in_memory': True})
