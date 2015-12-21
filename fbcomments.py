@@ -82,6 +82,14 @@ def _write_post(d, url, post):
     _write_data(d, bname, post)
 
 
+def _load_post(d, url):
+    assert url.startswith('http')
+
+    bname = os.path.basename(
+        re.sub(r'[^A-Za-z0-9-]+', '_', re.sub(r'^https?://', '', url)))
+    return _load_data(d, bname)
+
+
 def _write_data(d, name, data):
     fn = os.path.join(d, name)
     with io.open(fn, 'w', encoding='utf-8') as dataf:
@@ -205,6 +213,10 @@ def _xslsx_write_heading_range(worksheet, title, row, col, width, height=1):
 
 
 def _xslsx_write_row(worksheet, row_num, values, column_offset=0):
+    max_height = max(
+        (v.count('\n') + 1) if isinstance(v, str) else 1
+        for v in values)
+    worksheet.set_row(row_num, 12 * max_height)
     for i, v in enumerate(values, start=column_offset):
         worksheet.write(row_num, i, v)
 
@@ -213,7 +225,7 @@ def _iterate_comment_tree(comments):
     # Yields (depth, comment) tuples
     def _yield_recursive(depth, c):
         yield (depth, c)
-        for child in c.get('__children', []):
+        for child in c.get('comments', []):
             for t in _yield_recursive(depth + 1, child):
                 yield t
 
@@ -566,7 +578,7 @@ def action_comment_stats(config):
     print('%d comments' % count)
 
 
-def action_write_x(config):
+def action_write_page_x(config):
     import xlsxwriter
     latest_d = _latest_data(config)
     d = os.path.join(config['download_location'], latest_d)
@@ -693,6 +705,70 @@ def action_write_x(config):
 
     workbook.close()
     print('Wrote %s' % fn)
+
+
+def action_write_x(config, url_groups):
+    import xlsxwriter
+    latest_d = _latest_data(config)
+    d = os.path.join(config['download_location'], latest_d)
+    for i, url_group in enumerate(url_groups):
+        fn = os.path.join(d, 'comments_%d.xlsx' % i)
+
+        workbook = xlsxwriter.Workbook(
+            fn, {'strings_to_urls': False, 'in_memory': True})
+        workbook.set_properties({
+            'title': 'Kommentar-Analyse von %s' % latest_d,
+            'author': 'Philipp Hagemeister',
+            'company': 'HHU Düsseldorf',
+            'comments':
+            'Erstellt mit fbcomments (https://github.com/hhucn/fbcomments)',
+        })
+
+        fbc_formats = {
+            'heading': workbook.add_format({'bold': True}),
+            'heading_range': workbook.add_format(
+                {'bold': True, 'align': 'center'}),
+            'header': workbook.add_format({'bold': True, 'bottom': 1}),
+            'cell': workbook.add_format({'text_wrap': True})
+        }
+
+        for url in url_group:
+            service = re.match(
+                r'^https?://(?:www\.)?([a-z0-9]+)\.[a-z]+/', url).group(1)
+
+            worksheet = workbook.add_worksheet(service)
+            worksheet._fbc_formats = fbc_formats
+            _xslsx_write_header(worksheet, [
+                'ID', 'Datum', 'Likes', 'Shares', 'Autor-Id', 'Autor',
+                'Medium', 'Beitrag', 'Kommentar', 'Antwort'])
+
+            post = _load_post(d, url)
+            row = 1
+            _xslsx_write_row(worksheet, row, [
+                post.get('id', url),
+                post.get('created_time', ''),
+                post.get('like_count', ''),
+                post.get('share_count', ''),
+                post.get('author_id', ''),
+                post.get('author_name', ''),
+                post.get('type', ''),
+                post['text']
+            ])
+            for depth, c in _iterate_comment_tree(post['comments']):
+                row += 1
+                _xslsx_write_row(worksheet, row, [
+                    c['id'],
+                    c.get('created_time', ''),
+                    c.get('like_count', ''),
+                    '',
+                    c.get('author_id', ''),
+                    c.get('author_name', ''),
+                    c.get('medium', ''),
+                    '',  # Beitrag
+                ] + [''] * depth + [c['text']])
+
+        workbook.close()
+        print('Wrote %s' % fn)
 
 
 def action_count_users(config):
