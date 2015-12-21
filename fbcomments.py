@@ -21,11 +21,13 @@ import xml.etree.ElementTree
 #
 # id:           str
 # text:         str
-# created_time: ? (optional)
+# created_time: human-readable str (optional)
 # like_count:   int (optional)
 # share_count:  int (optional)
 # medium:       'video'|'share'|etc. (optional)
 # comments:     list of entries
+# author_name   str
+# author_id     str (optional)
 
 
 def _read_json(fn):
@@ -62,7 +64,22 @@ def graph_api(config, path, params={}, filter_func=None):
 def _download_webpage(url):
     with urllib.request.urlopen(url) as req:
         b = req.read()
-    return b.decode('utf-8')
+        content_type = req.headers.get('Content-Type')
+        encoding = 'utf-8'
+        if content_type:
+            content_type_charset_m = re.search(
+                r';\s*charset=(UTF-?8|ISO-[0-9]+-[0-9]+)', content_type)
+            if content_type_charset_m:
+                encoding = content_type_charset_m.group(1)
+        return b.decode(encoding)
+
+
+def _write_post(d, url, post):
+    assert url.startswith('http')
+
+    bname = os.path.basename(
+        re.sub(r'[^A-Za-z0-9-]+', '_', re.sub(r'^https?://', '', url)))
+    _write_data(d, bname, post)
 
 
 def _write_data(d, name, data):
@@ -81,10 +98,10 @@ def _latest_data(config):
     return sorted(os.listdir(config['download_location']))[-1]
 
 
-def _html2text(etree_node):
+def _node_text(etree_node):
     return (
         ('' if etree_node.text is None else etree_node.text) +
-        ''.join(_html2text(c) for c in etree_node.getchildren()) +
+        ''.join(_node_text(c) for c in etree_node.getchildren()) +
         ('' if etree_node.tail is None else etree_node.tail))
 
 
@@ -206,6 +223,10 @@ def _iterate_comment_tree(comments):
             yield t
 
 
+def _html2xml(html):
+    return html.replace('&nbsp;', '&#160;').replace('&uuml;', '&#252;')
+
+
 def action_download(config, url_groups):
     if not os.path.exists(config['download_location']):
         os.mkdir(config['download_location'])
@@ -221,7 +242,7 @@ def action_download(config, url_groups):
                 r'(?x)^https://www\.facebook\.com/' +
                 r'[^/]+/(?:posts|videos|photos/[^/]+)/([0-9]+)', url)
             if fbpost_m:
-                download_facebook_post(config, d, fbpost_m.group(1))
+                download_facebook_post(config, d, fbpost_m.group(1), url)
             elif re.match(r'^https?://www\.zeit\.de/', url):
                 download_zeit(config, d, url)
             elif re.match(r'^https?://www\.welt\.de/', url):
@@ -256,14 +277,14 @@ def download_zeit(config, d, url):
     last_toplevel = None
     for page in range(1, pagecount + 1):
         if config.get('verbose'):
-            print('.. page %d/%d' % (page, pagecount))
+            print('.. %d/%d' % (page, pagecount))
         p = _download_webpage(paging_url + str(page))
         section_xml = re.search(
             r'''(?sx)(<section\s+class="comment-section"\s+id="comments">
                 .*?</section>)''', p).group(1)
         section_xml = re.sub(r'(?s)<script(.*?)</script>', '', section_xml)
         section_xml = re.sub(r'(?s)<svg(.*?)</svg>', '', section_xml)
-        section_xml = section_xml.replace('&nbsp;', '&#160;')
+        section_xml = _html2xml(section_xml)
         section_xml = re.sub(
             r'(<(?:img|br)[^>]*)(?<!.../)>',
             lambda m: m.group(1) + '/>',
@@ -279,7 +300,7 @@ def download_zeit(config, d, url):
                 'id': article.attrib['id'],
                 'author_id': author_id,
                 'author_name': author_node.text,
-                'text': _html2text(body).strip(),
+                'text': _node_text(body).strip(),
                 'comments': [],
             }
             is_toplevel = 'js-comment-toplevel' in article.attrib['class']
@@ -295,34 +316,22 @@ def download_zeit(config, d, url):
         'medium': 'article',
         'comments': comments
     }
-    bname = os.path.basename(re.sub(r'[^A-Za-z0-9-]+', '_', title))
-    _write_data(d, bname, post)
+    _write_post(d, url, post)
 
 
-def download_welt(config, d, url):
-    webpage = _download_webpage(url)
-    disqus_forum = re.search(
-        r"var disqus_shortname='([^']+)';", webpage).group(1)
-    disqus_identifier = re.search(
-        r'var\s+disqus_identifier\s*=\s*([0-9]+);', webpage).group(1)
-
-    title = re.search(
-        r'<meta property="og:title" content="([^"]+)"/>', webpage).group(1)
-
+def _download_disqus(config, disqus_forum, disqus_identifier):
     disqus_url = (
         'http://disqus.com/embed/comments/?base=default&version=' +
-        config['welt_disqus_version'] + '&f=' + disqus_forum +
+        config['disqus_version'] + '&f=' + disqus_forum +
         '&t_i=' + disqus_identifier)
     disqus_embed = _download_webpage(disqus_url)
     disqus_thread = re.search(r'"thread":"([0-9]+)"', disqus_embed).group(1)
 
-    if config.get('verbose'):
-        print(title)
     all_comments = []
     cursor = '0:0:0'
     for page in itertools.count():
         if config.get('verbose'):
-            print('.. %d' % page)
+            print('.. %d' % (page + 1))
         page_url = (
             'http://disqus.com/api/3.0/threads/listPostsThreaded?' +
             urllib.parse.urlencode({
@@ -330,11 +339,10 @@ def download_welt(config, d, url):
                 'thread': disqus_thread,
                 'forum': disqus_forum,
                 'cursor': cursor,
-                'api_key': config['welt_api_key'],
+                'api_key': config['disqus_api_key'],
                 'order': 'asc',
             })
         )
-        print(page_url)
         cpage_json = _download_webpage(page_url)
         cpage = json.loads(cpage_json)
         if not cpage['cursor']['hasNext']:
@@ -346,7 +354,7 @@ def download_welt(config, d, url):
                 'author_name': cdata['author']['name'],
                 'created_time': 'createdAt',
                 'like_count': cdata['likes'],
-                'message': cdata['raw_message'],
+                'text': cdata['raw_message'],
                 'parent_id': cdata['parent'],
                 'comments': [],
             }
@@ -366,21 +374,110 @@ def download_welt(config, d, url):
         else:
             comments.append(c)
 
+    return comments
+
+
+def download_welt(config, d, url):
+    webpage = _download_webpage(url)
+    disqus_forum = re.search(
+        r"var disqus_shortname='([^']+)';", webpage).group(1)
+    disqus_identifier = re.search(
+        r'var\s+disqus_identifier\s*=\s*([0-9]+);', webpage).group(1)
+
+    title = re.search(
+        r'<meta property="og:title" content="([^"]+)"/>', webpage).group(1)
+    if config.get('verbose'):
+        print(title)
+
+    comments = _download_disqus(config, disqus_forum, disqus_identifier)
+
+    post = {
+        'text': title,
+        'medium': 'article',
+        'comments': comments,
+    }
+    _write_post(d, url, post)
+
+
+def download_spiegel(config, d, url):
+    webpage = _download_webpage(url)
+    title_html = re.search(
+        r'(?s)<h2 class="article-title">.*?</h2>', webpage).group(0)
+    title_node = xml.etree.ElementTree.fromstring(title_html)
+    title = _node_text(title_node).strip()
+
+    if config.get('verbose'):
+        print(title)
+
+    comment_count = int(re.search(
+        r'<span>\s*insgesamt ([0-9]+) Beiträge</span>', webpage).group(1))
+    page_count = (comment_count + 4) // 5
+    thread_id = re.search(
+        r'<input type="hidden" name="threadid" value="([0-9]+)" />', webpage
+    ).group(1)
+
+    comments = []
+    for page in range(1, page_count + 1):
+        if config.get('verbose'):
+            print('.. %d/%d' % (page, page_count))
+        page_url = (
+            'http://www.spiegel.de/fragments/community/spon-%s-%d.html' % (
+                thread_id, page * 5))
+        page_html = _download_webpage(page_url)
+        page_html = '<page>%s</page>' % page_html
+        page_node = xml.etree.ElementTree.fromstring(page_html)
+
+        for c in page_node.findall('./div[@class="article-comment"]'):
+            user_node = c.find('.//div[@class="article-comment-user"]/a')
+            date = user_node.tail.strip()
+            author_id = re.match(
+                r'/forum/member-([0-9]+)\.html',
+                user_node.attrib['href']).group(1)
+            author_name = user_node.text
+
+            text = _node_text(c.find(
+                './/*[@class="js-article-post-full-text"]')).strip()
+            comments.append({
+                'text': text,
+                'created_time': date,
+                'author_id': author_id,
+                'author_name': author_name,
+                'comments': []
+            })
+
     post = {
         'text': title,
         'medium': 'article',
         'comments': comments
     }
-    bname = os.path.basename(re.sub(r'[^A-Za-z0-9-]+', '_', title))
-    _write_data(d, bname, post)
-
-
-def download_spiegel(config, d, url):
-    pass
+    _write_post(d, url, post)
 
 
 def download_sz(config, d, url):
-    pass
+    webpage = _download_webpage(url)
+    title_xml = _html2xml(re.search(
+        r'<h1 itemprop="headline">.*?</h1>',
+        webpage).group(0))
+    title_node = xml.etree.ElementTree.fromstring(title_xml)
+    title = _node_text(title_node).strip()
+
+    if config.get('verbose'):
+        print(title)
+
+    disqus_json = re.search(
+        r'class="disqus-container" data-bind=\'widget.Disqus\s*(.*?)\'',
+        webpage).group(1)
+    disqus_data = json.loads(disqus_json)
+
+    comments = _download_disqus(
+        config, disqus_data['shortName'], disqus_data['identifier'])
+
+    post = {
+        'text': title,
+        'medium': 'article',
+        'comments': comments
+    }
+    _write_post(d, url, post)
 
 
 def download_facebook_page(config, d, page):
@@ -412,27 +509,50 @@ def download_facebook_page(config, d, page):
         sys.exit(1)
 
 
-def download_facebook_post(config, d, post_id):
+def download_facebook_post(config, d, post_id, url=None):
     try:
-        post = graph_api(config, '%s' % post_id)
+        raw_post = graph_api(config, '%s' % post_id)
     except urllib.error.HTTPError as he:
         if config.get('abort_on_error', True):
             raise
         else:
             return (post_id, he)
-    _write_data(d, 'post_%s' % post_id, post)
+    _write_data(d, 'post_%s' % post_id, raw_post)
 
-    comments = graph_api(
+    raw_comments = graph_api(
         config, '%s/comments' % post_id,
         {
             'filter': 'stream',
             'fields': 'parent,id,message,created_time,from,like_count'
         })
-    _write_data(d, 'comments_%s' % post_id, comments)
+    _write_data(d, 'comments_%s' % post_id, raw_comments)
 
     likes = graph_api(
         config, '%s/likes' % post_id, {})
     _write_data(d, 'likes_%s' % post_id, likes)
+
+    if url:
+        comments = [{
+            'id': rc['id'],
+            'created_time': rc['created_time'],
+            'text': rc['message'],
+            'like_count': rc['like_count'],
+            'author_id': rc['from']['id'],
+            'author_name': rc['from']['name'],
+        } for rc in raw_comments]
+
+        post = {
+            'id': post_id,
+            'text': raw_post['message'],
+            'comments': comments,
+            'created_time': raw_post['created_time'],
+            'like_count': len(raw_post['likes']),
+            'share_count': raw_post.get('shares', {'count': ''})['count'],
+            'author_id': raw_post['from']['id'],
+            'author_name': raw_post['from']['name'],
+            'medium': raw_post.get('type', 'unbekannt'),
+        }
+        _write_post(d, url, post)
 
 
 def action_comment_stats(config):
@@ -456,10 +576,8 @@ def action_write_x(config):
         fn, {'strings_to_urls': False, 'in_memory': True})
     workbook.set_properties({
         'title': 'Facebook-Analyse von %s' % latest_d,
-        'subject': 'Kommentare des Facebook-Accounts "%s"' % config['page'],
         'author': 'Philipp Hagemeister',
         'company': 'HHU Düsseldorf',
-        'keywords': 'Facebook, %s, Kommentare, Likes' % config['page'],
         'comments':
             'Erstellt mit fbcomments (https://github.com/hhucn/fbcomments)',
     })
