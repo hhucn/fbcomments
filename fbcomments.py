@@ -249,6 +249,8 @@ def download_zeit(config, d, url):
     title = re.search(r'''(?x)
         <span\s+class="article-heading__title">\s*(.*?)\s*</span>
         ''', webpage).group(1)
+    if config.get('verbose'):
+        print(title)
 
     comments = []
     last_toplevel = None
@@ -298,7 +300,79 @@ def download_zeit(config, d, url):
 
 
 def download_welt(config, d, url):
-    pass
+    webpage = _download_webpage(url)
+    disqus_forum = re.search(
+        r"var disqus_shortname='([^']+)';", webpage).group(1)
+    disqus_identifier = re.search(
+        r'var\s+disqus_identifier\s*=\s*([0-9]+);', webpage).group(1)
+
+    title = re.search(
+        r'<meta property="og:title" content="([^"]+)"/>', webpage).group(1)
+
+    disqus_url = (
+        'http://disqus.com/embed/comments/?base=default&version=' +
+        config['welt_disqus_version'] + '&f=' + disqus_forum +
+        '&t_i=' + disqus_identifier)
+    disqus_embed = _download_webpage(disqus_url)
+    disqus_thread = re.search(r'"thread":"([0-9]+)"', disqus_embed).group(1)
+
+    if config.get('verbose'):
+        print(title)
+    all_comments = []
+    cursor = '0:0:0'
+    for page in itertools.count():
+        if config.get('verbose'):
+            print('.. %d' % page)
+        page_url = (
+            'http://disqus.com/api/3.0/threads/listPostsThreaded?' +
+            urllib.parse.urlencode({
+                'limit': '100',
+                'thread': disqus_thread,
+                'forum': disqus_forum,
+                'cursor': cursor,
+                'api_key': config['welt_api_key'],
+                'order': 'asc',
+            })
+        )
+        print(page_url)
+        cpage_json = _download_webpage(page_url)
+        cpage = json.loads(cpage_json)
+        if not cpage['cursor']['hasNext']:
+            break
+        cursor = cpage['cursor']['next']
+        for cdata in cpage['response']:
+            c = {
+                'id': cdata['id'],
+                'author_name': cdata['author']['name'],
+                'created_time': 'createdAt',
+                'like_count': cdata['likes'],
+                'message': cdata['raw_message'],
+                'parent_id': cdata['parent'],
+                'comments': [],
+            }
+            author_id = cdata['author'].get('username')
+            if author_id:
+                c['author_id'] = author_id
+            all_comments.append(c)
+
+    comments_by_id = {int(c['id']): c for c in all_comments}
+
+    comments = []
+    for c in all_comments:
+        if c['parent_id']:
+            parent_id = int(c['parent_id'])
+            assert parent_id in comments_by_id
+            comments_by_id[parent_id]['comments'].append(c)
+        else:
+            comments.append(c)
+
+    post = {
+        'text': title,
+        'medium': 'article',
+        'comments': comments
+    }
+    bname = os.path.basename(re.sub(r'[^A-Za-z0-9-]+', '_', title))
+    _write_data(d, bname, post)
 
 
 def download_spiegel(config, d, url):
