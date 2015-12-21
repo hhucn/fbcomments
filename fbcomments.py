@@ -8,16 +8,29 @@ import io
 import itertools
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree
+
+#
+# Data structure
+#
+# id:           str
+# text:         str
+# created_time: ? (optional)
+# like_count:   int (optional)
+# share_count:  int (optional)
+# medium:       'video'|'share'|etc. (optional)
+# comments:     list of entries
 
 
-def _read_config(fn):
-    with io.open(fn, 'r', encoding='utf-8') as cfgf:
-        return json.load(cfgf)
+def _read_json(fn):
+    with io.open(fn, 'r', encoding='utf-8') as jsonf:
+        return json.load(jsonf)
 
 
 def graph_api(config, path, params={}, filter_func=None):
@@ -46,6 +59,12 @@ def graph_api(config, path, params={}, filter_func=None):
     return data
 
 
+def _download_webpage(url):
+    with urllib.request.urlopen(url) as req:
+        b = req.read()
+    return b.decode('utf-8')
+
+
 def _write_data(d, name, data):
     fn = os.path.join(d, name)
     with io.open(fn, 'w', encoding='utf-8') as dataf:
@@ -60,6 +79,13 @@ def _load_data(d, name):
 
 def _latest_data(config):
     return sorted(os.listdir(config['download_location']))[-1]
+
+
+def _html2text(etree_node):
+    return (
+        ('' if etree_node.text is None else etree_node.text) +
+        ''.join(_html2text(c) for c in etree_node.getchildren()) +
+        ('' if etree_node.tail is None else etree_node.tail))
 
 
 def _read_all(d):
@@ -180,7 +206,7 @@ def _iterate_comment_tree(comments):
             yield t
 
 
-def action_download(config):
+def action_download(config, url_groups):
     if not os.path.exists(config['download_location']):
         os.mkdir(config['download_location'])
     d = os.path.join(
@@ -189,6 +215,101 @@ def action_download(config):
     os.mkdir(d)
     print('Downloading to %s' % d)
 
+    for url_group in url_groups:
+        for url in url_group:
+            fbpost_m = re.match(
+                r'(?x)^https://www\.facebook\.com/' +
+                r'[^/]+/(?:posts|videos|photos/[^/]+)/([0-9]+)', url)
+            if fbpost_m:
+                download_facebook_post(config, d, fbpost_m.group(1))
+            elif re.match(r'^https?://www\.zeit\.de/', url):
+                download_zeit(config, d, url)
+            elif re.match(r'^https?://www\.welt\.de/', url):
+                download_welt(config, d, url)
+            elif re.match(r'^https?://www\.spiegel\.de/', url):
+                download_spiegel(config, d, url)
+            elif re.match(r'^https?://www\.sueddeutsche\.de/', url):
+                download_sz(config, d, url)
+            else:
+                assert 'http' not in url, 'URL %s is not a facebook page' % url
+                download_facebook_page(config, d, url)
+
+
+def download_zeit(config, d, url):
+    webpage = _download_webpage(url)
+    m = re.search(r'''(?x)
+        <li\s+class="pager__page">\s*
+        <a\s+href="(?P<paging_url>.*?\?page=)(?P<pagecount>[0-9]+)\#comments">
+        \s*[0-9]+\s*
+        </a>\s*</li>\s*</ul>
+        ''', webpage)
+    pagecount = int(m.group('pagecount'))
+    paging_url = m.group('paging_url')
+
+    title = re.search(r'''(?x)
+        <span\s+class="article-heading__title">\s*(.*?)\s*</span>
+        ''', webpage).group(1)
+
+    comments = []
+    last_toplevel = None
+    for page in range(1, pagecount + 1):
+        if config.get('verbose'):
+            print('.. page %d/%d' % (page, pagecount))
+        p = _download_webpage(paging_url + str(page))
+        section_xml = re.search(
+            r'''(?sx)(<section\s+class="comment-section"\s+id="comments">
+                .*?</section>)''', p).group(1)
+        section_xml = re.sub(r'(?s)<script(.*?)</script>', '', section_xml)
+        section_xml = re.sub(r'(?s)<svg(.*?)</svg>', '', section_xml)
+        section_xml = section_xml.replace('&nbsp;', '&#160;')
+        section_xml = re.sub(
+            r'(<(?:img|br)[^>]*)(?<!.../)>',
+            lambda m: m.group(1) + '/>',
+            section_xml)
+        section = xml.etree.ElementTree.fromstring(section_xml)
+        for article in section.findall('.//article'):
+            author_node = article.find('.//*[@class="comment-meta__name"]/a')
+            author_id = re.match(
+                r'.*community\.zeit\.de/user/(?P<user_id>[^/]+)$',
+                author_node.attrib['href']).group('user_id')
+            body = article.find('.//*[@class="comment__body"]')
+            comment = {
+                'id': article.attrib['id'],
+                'author_id': author_id,
+                'author_name': author_node.text,
+                'text': _html2text(body).strip(),
+                'comments': [],
+            }
+            is_toplevel = 'js-comment-toplevel' in article.attrib['class']
+            if is_toplevel:
+                comments.append(comment)
+                last_toplevel = comment
+            else:
+                assert last_toplevel
+                last_toplevel['comments'].append(comment)
+
+    post = {
+        'text': title,
+        'medium': 'article',
+        'comments': comments
+    }
+    bname = os.path.basename(re.sub(r'[^A-Za-z0-9-]+', '_', title))
+    _write_data(d, bname, post)
+
+
+def download_welt(config, d, url):
+    pass
+
+
+def download_spiegel(config, d, url):
+    pass
+
+
+def download_sz(config, d, url):
+    pass
+
+
+def download_facebook_page(config, d, page):
     filter_func = None
     if config.get('feedmessage_grep'):
         def filter_func(p):
@@ -197,7 +318,7 @@ def action_download(config):
             res = config['feedmessage_grep'] in p['message']
             return res
 
-    feed = graph_api(config, '%s/feed' % config['page'], params={
+    feed = graph_api(config, '%s/feed' % page, params={
         'fields': 'id,message'
     }, filter_func=filter_func)
     _write_data(d, 'feed', feed)
@@ -205,27 +326,9 @@ def action_download(config):
     errors = []
     for post_overview in feed:
         post_id = post_overview['id']
-        try:
-            post = graph_api(config, '%s' % post_id)
-        except urllib.error.HTTPError as he:
-            if config.get('abort_on_error', True):
-                raise
-            else:
-                errors.append((post_id, he))
-                continue
-        _write_data(d, 'post_%s' % post_id, post)
-
-        comments = graph_api(
-            config, '%s/comments' % post_id,
-            {
-                'filter': 'stream',
-                'fields': 'parent,id,message,created_time,from,like_count'
-            })
-        _write_data(d, 'comments_%s' % post_id, comments)
-
-        likes = graph_api(
-            config, '%s/likes' % post_id, {})
-        _write_data(d, 'likes_%s' % post_id, likes)
+        post_error = download_facebook_post(config, post_id)
+        if post_error:
+            errors.append(post_error)
 
     if errors:
         print('The following posts failed to load:')
@@ -233,6 +336,29 @@ def action_download(config):
             print('%s (%d)' % (post_id, he.code))
 
         sys.exit(1)
+
+
+def download_facebook_post(config, d, post_id):
+    try:
+        post = graph_api(config, '%s' % post_id)
+    except urllib.error.HTTPError as he:
+        if config.get('abort_on_error', True):
+            raise
+        else:
+            return (post_id, he)
+    _write_data(d, 'post_%s' % post_id, post)
+
+    comments = graph_api(
+        config, '%s/comments' % post_id,
+        {
+            'filter': 'stream',
+            'fields': 'parent,id,message,created_time,from,like_count'
+        })
+    _write_data(d, 'comments_%s' % post_id, comments)
+
+    likes = graph_api(
+        config, '%s/likes' % post_id, {})
+    _write_data(d, 'likes_%s' % post_id, likes)
 
 
 def action_comment_stats(config):
@@ -415,8 +541,9 @@ def main():
     )
     args = parser.parse_args()
 
-    config = _read_config(args.config_file_location)
-    globals()['action_%s' % args.action](config)
+    config = _read_json(args.config_file_location)
+    url_groups = _read_json(config['urls_file'])
+    globals()['action_%s' % args.action](config, url_groups)
 
 
 if __name__ == '__main__':
