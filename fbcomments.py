@@ -229,14 +229,15 @@ def _iterate_comment_tree(comments):
             for t in _yield_recursive(depth + 1, child):
                 yield t
 
-    root = _comment_tree(comments)
-    for c in root:
+    for c in comments:
         for t in _yield_recursive(0, c):
             yield t
 
 
 def _html2xml(html):
-    return html.replace('&nbsp;', '&#160;').replace('&uuml;', '&#252;')
+    return (
+        html.replace('&nbsp;', '&#160;').
+        replace('&uuml;', '&#252;').replace('&ouml;', '&#;'))
 
 
 def action_download(config, url_groups):
@@ -555,10 +556,11 @@ def download_facebook_post(config, d, post_id, url=None):
 
         post = {
             'id': post_id,
-            'text': raw_post['message'],
+            'text': raw_post.get('message', raw_post.get('name')),
             'comments': comments,
             'created_time': raw_post['created_time'],
-            'like_count': len(raw_post['likes']),
+            'like_count': (
+                len(raw_post['likes']) if 'likes' in raw_post else ''),
             'share_count': raw_post.get('shares', {'count': ''})['count'],
             'author_id': raw_post['from']['id'],
             'author_name': raw_post['from']['name'],
@@ -762,7 +764,7 @@ def action_write_x(config, url_groups):
             for depth, c in _iterate_comment_tree(post['comments']):
                 row += 1
                 _xslsx_write_row(worksheet, row, [
-                    c['id'],
+                    c.get('id', ''),
                     c.get('created_time', ''),
                     c.get('like_count', ''),
                     '',
