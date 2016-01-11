@@ -544,29 +544,43 @@ def download_facebook_post(config, d, post_id, url=None):
         config, '%s/likes' % post_id, {})
     _write_data(d, 'likes_%s' % post_id, likes)
 
-    if url:
-        comments = [{
+    if not url:
+        return
+
+    comments_by_id = {}
+    comments = []
+
+    for rc in raw_comments:
+        c = {
             'id': rc['id'],
             'created_time': rc['created_time'],
             'text': rc['message'],
             'like_count': rc['like_count'],
             'author_id': rc['from']['id'],
             'author_name': rc['from']['name'],
-        } for rc in raw_comments]
-
-        post = {
-            'id': post_id,
-            'text': raw_post.get('message', raw_post.get('name')),
-            'comments': comments,
-            'created_time': raw_post['created_time'],
-            'like_count': (
-                len(raw_post['likes']) if 'likes' in raw_post else ''),
-            'share_count': raw_post.get('shares', {'count': ''})['count'],
-            'author_id': raw_post['from']['id'],
-            'author_name': raw_post['from']['name'],
-            'medium': raw_post.get('type', 'unbekannt'),
+            'comments': [],
         }
-        _write_post(d, url, post)
+        comments_by_id[c['id']] = c
+        if rc.get('parent'):
+            parent_id = rc['parent']['id']
+            parent_c = comments_by_id[parent_id]
+            parent_c['comments'].append(c)
+        else:
+            comments.append(c)
+
+    post = {
+        'id': post_id,
+        'text': raw_post.get('message', raw_post.get('name')),
+        'comments': comments,
+        'created_time': raw_post['created_time'],
+        'like_count': (
+            len(raw_post['likes']) if 'likes' in raw_post else ''),
+        'share_count': raw_post.get('shares', {'count': ''})['count'],
+        'author_id': raw_post['from']['id'],
+        'author_name': raw_post['from']['name'],
+        'medium': raw_post.get('type', 'unbekannt'),
+    }
+    _write_post(d, url, post)
 
 
 def action_comment_stats(config):
