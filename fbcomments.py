@@ -237,7 +237,7 @@ def _iterate_comment_tree(comments):
 def _html2xml(html):
     return (
         html.replace('&nbsp;', '&#160;').
-        replace('&uuml;', '&#252;').replace('&ouml;', '&#;'))
+        replace('&uuml;', '&#252;').replace('&ouml;', '&#246;'))
 
 
 def action_download(config, url_groups):
@@ -336,7 +336,7 @@ def _download_disqus(config, disqus_forum, disqus_identifier):
     disqus_url = (
         'http://disqus.com/embed/comments/?base=default&version=' +
         config['disqus_version'] + '&f=' + disqus_forum +
-        '&t_i=' + disqus_identifier)
+        '&t_i=' + disqus_identifier + '&t_t=volk')
     disqus_embed = _download_webpage(disqus_url)
     disqus_thread = re.search(r'"thread":"([0-9]+)"', disqus_embed).group(1)
 
@@ -358,9 +358,6 @@ def _download_disqus(config, disqus_forum, disqus_identifier):
         )
         cpage_json = _download_webpage(page_url)
         cpage = json.loads(cpage_json)
-        if not cpage['cursor']['hasNext']:
-            break
-        cursor = cpage['cursor']['next']
         for cdata in cpage['response']:
             c = {
                 'id': cdata['id'],
@@ -375,6 +372,9 @@ def _download_disqus(config, disqus_forum, disqus_identifier):
             if author_id:
                 c['author_id'] = author_id
             all_comments.append(c)
+        if not cpage['cursor']['hasNext']:
+            break
+        cursor = cpage['cursor']['next']
 
     comments_by_id = {int(c['id']): c for c in all_comments}
 
@@ -478,9 +478,9 @@ def download_sz(config, d, url):
         print(title)
 
     disqus_json = re.search(
-        r'class="disqus-container" data-bind=\'widget.Disqus\s*(.*?)\'',
+        r'class="disqus-container" data-bind=\'(\{"widget.Disqus":.*?)\'>',
         webpage).group(1)
-    disqus_data = json.loads(disqus_json)
+    disqus_data = json.loads(disqus_json)['widget.Disqus']
 
     comments = _download_disqus(
         config, disqus_data['shortName'], disqus_data['identifier'])
