@@ -415,7 +415,8 @@ def download_welt(config, d, url):
 def download_spiegel(config, d, url):
     webpage = _download_webpage(url)
     title_html = re.search(
-        r'(?s)<h2 class="article-title">.*?</h2>', webpage).group(0)
+        r'(?s)<h2 class="article-title(?: lp-article-title)?">.*?</h2>',
+        webpage).group(0)
     title_node = xml.etree.ElementTree.fromstring(title_html)
     title = _node_text(title_node).strip()
 
